@@ -104,14 +104,22 @@ class PositionalEncoding(nn.Module):
 
 
 class DDPMBlock(nn.Module):
-    def __init__(self, data_dim: int, hidden_dims: tuple[int]):
+    def __init__(
+        self,
+        data_dim: int,
+        hidden_dims: tuple[int],
+        diffusion_step_embed_dim: int = 256,
+    ):
         super().__init__()
-        self.positional_encoding = PositionalEncoding(data_dim)
-        self.network = MLP(data_dim, hidden_dims, data_dim)
+        dsed = diffusion_step_embed_dim
+        self.positional_encoding = nn.Sequential(
+            PositionalEncoding(dsed), MLP(dsed, (4 * dsed,), dsed, activation=nn.Mish)
+        )
+        self.network = MLP(data_dim + dsed, hidden_dims, data_dim)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         pos_embed = self.positional_encoding(t)
-        x = self.network(x + pos_embed)
+        x = self.network(torch.cat([x, pos_embed], dim=-1))
 
         return x
 
