@@ -76,6 +76,49 @@ class VAE(nn.Module):
             return self.output_normalizer.unnormalize(mean_norm, variance_norm)
         return mean_norm, variance_norm
 
+    def loss(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the Evidence Lower Bound (ELBO) loss.
+
+        Args:
+            model: CVAE; the CVAE self.
+            data: Tensor of shape (batch_size, output_dim); the target data.
+            conditioning: Tensor of shape (batch_size, cond_dim); the conditioning data.
+
+        Returns:
+            Tensor; the mean ELBO loss.
+        """
+
+        # Normalize data and conditioning inputs.
+        data_norm = self.output_normalizer.normalize(data)
+
+        # Encode data to get latent mean and variance.
+        z_mean, z_var = self.encode(data_norm)
+
+        # Reparameterize to get latent sample.
+        z = reparameterize(z_mean, z_var)
+
+        # Decode latent sample to get output mean and variance.
+        output_mean, output_var = self.decode(z, unnormalize=False)
+
+        # Compute reconstruction log probability (reconstruction loss).
+        recon_loss = compute_log_prob(output_mean, output_var, data_norm).mean()
+
+        # Compute prior distribution and KL divergence.
+        latent_dist = Normal(z_mean, torch.sqrt(z_var))
+        prior_dist = Normal(torch.zeros_like(z_mean), torch.ones_like(z_var))
+        kl_div = kl_divergence(latent_dist, prior_dist).mean()
+
+        # ELBO = Reconstruction Loss - KL Divergence
+        elbo = recon_loss - kl_div
+
+        return -elbo  # Return negative ELBO as the loss
+
+    def sample(self, num_samples: int) -> torch.Tensor:
+        """Draws `num_samples` samples from the VAE."""
+        z = torch.randn(num_samples, self.latent_dim)
+        return self.decode(z, unnormalize=True)
+
 
 def reparameterize(mean: Tensor, var: Tensor) -> Tensor:
     """Reparameterize a normal distribution to sample with rsample()."""
@@ -88,41 +131,3 @@ def compute_log_prob(mean: Tensor, var: Tensor, data: Tensor) -> Tensor:
     """Compute log probability of data under Normal(mean, var)."""
     dist = Normal(mean, torch.sqrt(var))
     return dist.log_prob(data).sum(dim=-1)  # Sum over data dimensions
-
-
-def elbo_loss_vae(model: VAE, data: Tensor) -> Tensor:
-    """
-    Computes the Evidence Lower Bound (ELBO) loss.
-
-    Args:
-        model: CVAE; the CVAE model.
-        data: Tensor of shape (batch_size, output_dim); the target data.
-        conditioning: Tensor of shape (batch_size, cond_dim); the conditioning data.
-
-    Returns:
-        Tensor; the mean ELBO loss.
-    """
-    # Normalize data and conditioning inputs.
-    data_norm = model.output_normalizer.normalize(data)
-
-    # Encode data to get latent mean and variance.
-    z_mean, z_var = model.encode(data_norm)
-
-    # Reparameterize to get latent sample.
-    z = reparameterize(z_mean, z_var)
-
-    # Decode latent sample to get output mean and variance.
-    output_mean, output_var = model.decode(z, unnormalize=False)
-
-    # Compute reconstruction log probability (reconstruction loss).
-    recon_loss = compute_log_prob(output_mean, output_var, data_norm).mean()
-
-    # Compute prior distribution and KL divergence.
-    latent_dist = Normal(z_mean, torch.sqrt(z_var))
-    prior_dist = Normal(torch.zeros_like(z_mean), torch.ones_like(z_var))
-    kl_div = kl_divergence(latent_dist, prior_dist).mean()
-
-    # ELBO = Reconstruction Loss - KL Divergence
-    elbo = recon_loss - kl_div
-
-    return -elbo  # Return negative ELBO as the loss
