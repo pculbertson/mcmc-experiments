@@ -149,16 +149,26 @@ class DDPM(nn.Module):
         noise_pred = self.ddpm_block(x_noised, t)
         return (noise_pred - raw_noise).square().mean()
 
-    def sample(self, num_samples: int) -> torch.Tensor:
+    def sample(
+        self, num_samples: int, return_trajectories: bool = False
+    ) -> torch.Tensor:
         x = torch.randn(num_samples, *self.data_shape)
+        if return_trajectories:
+            X = torch.zeros(num_samples, self.num_denoising_steps, *self.data_shape)
+            X[:, -1] = self.data_normalizer.unnormalize(x)
 
-        for t in torch.arange(self.num_denoising_steps - 1, 0, -1):
+        for t in torch.arange(self.num_denoising_steps - 1, -1, -1):
             t = t.expand(
                 num_samples,
             )
             pred_noise = self.ddpm_block(x, t)
             raw_noise = torch.randn_like(x)
-            print(x.shape, pred_noise.shape)
             x = self.noise_scheduler.denoise_step(x, pred_noise, raw_noise, t)
+
+            if return_trajectories:
+                X[:, t[0]] = self.data_normalizer.unnormalize(x)
+
+        if return_trajectories:
+            return self.data_normalizer.unnormalize(x), X
 
         return self.data_normalizer.unnormalize(x)
