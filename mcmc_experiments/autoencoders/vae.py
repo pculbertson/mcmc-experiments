@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -14,6 +14,9 @@ class VAEConfig:
     latent_dim: int
     encoder_layers: Tuple[int]
     decoder_layers: Tuple[int]
+    loss_type: Literal["elbo", "iwae"] = "elbo"
+    elbo_kl_weight: float = 1.0
+    num_iwae_samples: int = 20
 
 
 class VAE(nn.Module):
@@ -32,6 +35,10 @@ class VAE(nn.Module):
 
         self.input_dim = config.input_dim
         self.latent_dim = config.latent_dim
+
+        self.loss_type = config.loss_type
+        self.elbo_kl_weight = config.elbo_kl_weight
+        self.num_iwae_samples = config.num_iwae_samples
 
         # Initialize normalization layers with default values.
         self.output_normalizer = self._create_normalizer(
@@ -76,7 +83,13 @@ class VAE(nn.Module):
             return self.output_normalizer.unnormalize(mean_norm, variance_norm)
         return mean_norm, variance_norm
 
-    def loss(self, data: torch.Tensor) -> torch.Tensor:
+    def loss(self, data) -> torch.Tensor:
+        if self.loss_type == "elbo":
+            return self.elbo_loss(data, kl_weight=self.kl_weight)
+        elif self.loss_type == "iwae":
+            return self.iwae_loss(data, num_latent_samples=self.num_iwae_samples)
+
+    def elbo_loss(self, data: torch.Tensor, kl_weight: float = 1.0) -> torch.Tensor:
         """
         Computes the Evidence Lower Bound (ELBO) loss.
 
@@ -107,17 +120,53 @@ class VAE(nn.Module):
         # Compute prior distribution and KL divergence.
         latent_dist = Normal(z_mean, torch.sqrt(z_var))
         prior_dist = Normal(torch.zeros_like(z_mean), torch.ones_like(z_var))
-        kl_div = kl_divergence(latent_dist, prior_dist).mean()
+        kl_div = (
+            kl_divergence(latent_dist, prior_dist).sum(dim=-1).mean()
+        )  # IMPORTANT: summed for KL of multivariate Gaussian
 
         # ELBO = Reconstruction Loss - KL Divergence
         elbo = recon_loss - kl_div
 
         return -elbo  # Return negative ELBO as the loss
 
+    def iwae_loss(
+        self, data: torch.Tensor, num_latent_samples: int = 20
+    ) -> torch.Tensor:
+        # Normalize data.
+        data_norm = self.output_normalizer.normalize(data)
+        data_norm_expanded = data_norm[:, None].expand(-1, num_latent_samples, -1)
+
+        # Encode data to get latent distribution.
+        z_mean, z_var = self.encode(data_norm)
+
+        # Expand parameters to take multiple samples.
+        z_mean_expanded = z_mean[:, None].expand(-1, num_latent_samples, -1)
+        z_var_expanded = z_var[:, None].expand(-1, num_latent_samples, -1)
+
+        # Sample from latent distribution.
+        z = reparameterize(z_mean_expanded, z_var_expanded)
+
+        # Compute log probs needed for IWAE loss.
+        output_mean, output_var = self.decode(z, unnormalize=False)
+        prior_mean, prior_var = (
+            torch.zeros_like(z_mean_expanded),
+            torch.ones_like(z_var_expanded),
+        )
+
+        reconstruction_logprob = compute_log_prob(
+            output_mean, output_var, data_norm_expanded
+        )
+        prior_logprob = compute_log_prob(prior_mean, prior_var, z)
+        encoder_logprob = compute_log_prob(z_mean_expanded, z_var_expanded, z)
+
+        total_logprob = reconstruction_logprob + prior_logprob - encoder_logprob
+
+        return -torch.logsumexp(total_logprob, -1).mean()
+
     def sample(self, num_samples: int) -> torch.Tensor:
         """Draws `num_samples` samples from the VAE."""
         z = torch.randn(num_samples, self.latent_dim)
-        return self.decode(z, unnormalize=True)
+        return reparameterize(*self.decode(z, unnormalize=True))
 
 
 def reparameterize(mean: Tensor, var: Tensor) -> Tensor:
