@@ -10,7 +10,7 @@ from mcmc_experiments.utils.models import MLP, Normalizer
 @dataclass
 class DDPMConfig:
     data_dim: int
-    num_denoising_steps: int = 4000
+    num_denoising_steps: int = 1000
     hidden_dims: tuple[int] = (32, 32)
     noise_schedule: Literal["cosine", "linear"] = "linear"
 
@@ -108,14 +108,14 @@ class DDPMBlock(nn.Module):
         self,
         data_dim: int,
         hidden_dims: tuple[int],
-        diffusion_step_embed_dim: int = 256,
+        diffusion_step_embed_dim: int = 8,
     ):
         super().__init__()
         dsed = diffusion_step_embed_dim
         self.positional_encoding = nn.Sequential(
-            PositionalEncoding(dsed), MLP(dsed, (4 * dsed,), dsed, activation=nn.Mish)
+            PositionalEncoding(dsed), MLP(dsed, (dsed,), dsed // 4, activation=nn.Mish)
         )
-        self.network = MLP(data_dim + dsed, hidden_dims, data_dim)
+        self.network = MLP(data_dim + (dsed // 4), hidden_dims, data_dim)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         pos_embed = self.positional_encoding(t)
